@@ -192,6 +192,9 @@ def build_status_bar() -> Panel:
     bar.append("  ")
     bar.append("NYSE OPEN" if nyse_open else "NYSE CLOSED", style="green" if nyse_open else "dim")
     bar.append(last_refresh, style="dim")
+    mode = getattr(state.snapshot, "mode", "demo")
+    bar.append("  ")
+    bar.append("● LIVE" if mode == "live" else "● DEMO", style="bold green" if mode == "live" else "bold yellow")
     if state.snapshot.is_stale:
         bar.append(" [STALE DATA]", style="bold red")
 
@@ -307,7 +310,9 @@ def build_macro_panel() -> Panel:
             continue
         ind = indicators.get(key)
         if not ind:
-            table.add_row(key, "—", "─", style="dim")
+            # Show friendly label even when data not yet loaded
+            friendly = key.replace("_", " ").title()
+            table.add_row(friendly, "—", "─", style="dim")
             continue
         style = _sentiment_style(ind.sentiment)
         table.add_row(
@@ -673,38 +678,27 @@ async def main() -> None:
 
     console.print("[bold blue]JCR Investments Terminal[/] — Initialising…")
 
-    # Wire up MCP callers
-    # In practice these come from the environment's MCP connections.
-    # The IBKR MCP tools are available as direct async functions.
-    # We detect if we're running under the Claude Code harness (MCP available)
-    # or standalone (demo/fallback mode).
-    try:
-        # Try to import MCP tools — will succeed in Claude Code environment
-        from mcp_ibkr import get_account_positions, get_account_summary  # type: ignore[import]
-        log.info("IBKR MCP available — using live data")
+    # Check if a pre-populated snapshot JSON exists (written by inject_live_data.py)
+    _try_load_snapshot_json()
 
-        async def _ibkr_call_real(tool: str, **kwargs: Any) -> Any:
-            import importlib
-            mod = importlib.import_module("mcp_ibkr")
-            fn = getattr(mod, tool)
-            return await fn(**kwargs) if asyncio.iscoroutinefunction(fn) else fn(**kwargs)
+    # IBKR: standalone Python cannot access MCP tools directly.
+    # Try REST API (IBKR Gateway on localhost or OAuth token), else demo.
+    from ibkr import IBKRRestClient
+    rest = IBKRRestClient()
+    if rest.is_configured():
+        log.info("IBKR REST API configured — using live data")
+        console.print("[green]IBKR REST API gevonden — live data actief[/]")
+    else:
+        log.warning("No IBKR REST API config found — using demo mode")
+        console.print("[yellow]Geen IBKR REST API config — demo mode[/]")
+        console.print("[dim]Stel IBKR_BASE_URL + IBKR_ACCESS_TOKEN in .env in voor live data[/]")
+        ibkr_client.set_demo_fn(_demo_ibkr_call)
 
-        ibkr_client.set_mcp_caller(_ibkr_call_real)
-    except ImportError:
-        log.warning("IBKR MCP not found — running in demo mode")
-        ibkr_client.set_mcp_caller(_demo_ibkr_call)
-
-    try:
-        from mcp_websearch import search  # type: ignore[import]
-        macro_fetcher.set_web_searcher(search)
-        market_fetcher.set_web_searcher(search)
-        news_fetcher.set_web_searcher(search)
-        log.info("Web search MCP available")
-    except ImportError:
-        log.warning("Web search MCP not found — macro/news will use demo data")
-        macro_fetcher.set_web_searcher(_demo_search)
-        market_fetcher.set_web_searcher(_demo_search)
-        news_fetcher.set_web_searcher(_demo_search)
+    # Web search: also not available from standalone Python.
+    # Use demo search data unless overridden.
+    macro_fetcher.set_web_searcher(_demo_search)
+    market_fetcher.set_web_searcher(_demo_search)
+    news_fetcher.set_web_searcher(_demo_search)
 
     console.print("[green]Starting background data tasks…[/]")
 
@@ -735,6 +729,78 @@ async def main() -> None:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     console.print("\n[bold]JCR Terminal closed.[/]")
+
+
+# ---------------------------------------------------------------------------
+# Snapshot JSON bridge — inject_live_data.py writes this, main.py reads it
+# ---------------------------------------------------------------------------
+
+SNAPSHOT_PATH = os.path.join(os.path.dirname(__file__), "data", "snapshot.json")
+
+
+def _try_load_snapshot_json() -> None:
+    """Load pre-fetched IBKR data from data/snapshot.json if it exists and is fresh."""
+    import json
+    from ibkr import AccountSummary, IBKRSnapshot, Position
+    if not os.path.exists(SNAPSHOT_PATH):
+        return
+    try:
+        with open(SNAPSHOT_PATH) as f:
+            d = json.load(f)
+        age = time.time() - d.get("fetched_at", 0)
+        if age > 3600:  # stale after 1 hour
+            log.warning("snapshot.json is %.0f minutes old — ignoring", age / 60)
+            return
+        s = d.get("summary", {})
+        summary = AccountSummary(
+            nav=s.get("nav", 0),
+            nav_currency=s.get("nav_currency", "EUR"),
+            cash=s.get("cash", 0),
+            buying_power=s.get("buying_power", 0),
+            gross_position_value=s.get("gross_position_value", 0),
+            unrealized_pnl=s.get("unrealized_pnl", 0),
+        )
+        positions = []
+        for p in d.get("positions", []):
+            positions.append(Position(
+                conid=p.get("conid", ""),
+                ticker=p.get("ticker", ""),
+                description=p.get("description", ""),
+                quantity=p.get("quantity", 0),
+                market_price=p.get("market_price", 0),
+                market_value=p.get("market_value", 0),
+                avg_cost=p.get("avg_cost", 0),
+                unrealized_pnl=p.get("unrealized_pnl", 0),
+                realized_pnl=p.get("realized_pnl", 0),
+                daily_pnl=p.get("daily_pnl", 0),
+                day_change_pct=p.get("day_change_pct", 0),
+                week_change_pct=p.get("week_change_pct", 0),
+                currency=p.get("currency", "USD"),
+                asset_class=p.get("asset_class", "STK"),
+                bucket=p.get("bucket", "MED"),
+            ))
+        from ibkr import IBKRSnapshot
+        snap = IBKRSnapshot(
+            positions=positions,
+            summary=summary,
+            free_cash=d.get("free_cash", summary.cash),
+            last_updated=datetime.fromtimestamp(d["fetched_at"], tz=timezone.utc),
+            is_stale=False,
+            mode="live",
+        )
+        state.snapshot = snap
+        state.eur_usd = d.get("eur_usd", 1.08)
+        state.bucket_map = {p.ticker: p.bucket for p in positions}
+        from dca import compute_suggestions, compute_week_overview, compute_risk_flags
+        state.dca_suggestions = compute_suggestions(snap, state.bucket_map, state.eur_usd)
+        state.week_overview = compute_week_overview(snap, state.bucket_map, state.eur_usd)
+        state.risk_flags = compute_risk_flags(snap, state.bucket_map)
+        log.info("Loaded snapshot.json: %d positions, NAV=%.2f %s (%.0f min old)",
+                 len(positions), summary.nav, summary.nav_currency, age / 60)
+        console.print(f"[green]Snapshot geladen: {len(positions)} posities, NAV "
+                      f"{summary.nav_currency} {summary.nav:,.2f} ({age/60:.0f} min oud)[/]")
+    except Exception as exc:
+        log.warning("Failed to load snapshot.json: %s", exc)
 
 
 # ---------------------------------------------------------------------------

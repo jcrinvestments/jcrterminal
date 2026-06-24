@@ -129,8 +129,9 @@ NYSE_CLOSE = (22, 0) # 22:00 CET (= 16:00 EST)
 # IBKR MCP endpoint — override via IBKR_MCP_URL in .env
 IBKR_MCP_URL = os.getenv("IBKR_MCP_URL", "https://api.ibkr.com/v1/api/mcp")
 
-# Cash reserve floor — do not deploy below this (EUR)
-CASH_RESERVE_EUR = float(os.getenv("CASH_RESERVE_EUR", "5000"))
+# Cash reserve floor — do not deploy below this (EUR).
+# Default 200 EUR; set higher (e.g. 5000) for larger portfolios via .env
+CASH_RESERVE_EUR = float(os.getenv("CASH_RESERVE_EUR", "200"))
 
 # DCA rotation groups (assign tickers in .env or override here)
 DCA_GROUPS: dict[str, list[str]] = {
