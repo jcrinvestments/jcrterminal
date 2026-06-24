@@ -101,6 +101,7 @@ class NewsFetcher:
         self._web_search: Optional[object] = None
         self._lock = asyncio.Lock()
         self._seen_headlines: set[str] = set()
+        self._first_seen: dict[str, datetime] = {}
         self._portfolio_tickers: list[str] = []
 
     def set_web_searcher(self, fn: object) -> None:
@@ -140,12 +141,16 @@ class NewsFetcher:
             tags = _classify_tags(headline)
             sentiment = _classify_sentiment(headline)
             priority = _priority(headline, self._portfolio_tickers)
+            now = datetime.now(timezone.utc)
+            if headline not in self._first_seen:
+                self._first_seen[headline] = now
             items.append(NewsItem(
                 headline=headline,
                 source=source_tag,
                 tags=tags,
                 sentiment=sentiment,
                 priority=priority,
+                timestamp=self._first_seen[headline],
                 is_new=True,
             ))
             self._seen_headlines.add(headline)
