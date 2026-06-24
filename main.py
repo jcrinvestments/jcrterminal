@@ -171,12 +171,8 @@ def build_status_bar() -> Panel:
     nav_eur = state.nav_eur()
     nav_usd = state.nav_usd()
 
-    ams_status = "[green]AMS OPEN[/]" if _ams_open() else "[dim]AMS CLOSED[/]"
-    nyse_status = "[green]NYSE OPEN[/]" if _nyse_open() else "[dim]NYSE CLOSED[/]"
-
-    stale_warn = ""
-    if state.snapshot.is_stale:
-        stale_warn = " [red bold][STALE DATA][/]"
+    ams_open = _ams_open()
+    nyse_open = _nyse_open()
 
     last_refresh = ""
     if state.snapshot.last_updated:
@@ -184,16 +180,20 @@ def build_status_bar() -> Panel:
         last_refresh = f"  Refresh: {lr.strftime('%H:%M:%S')}"
 
     bar = Text()
-    bar.append(f" JCR INVESTMENTS TERMINAL  ", style="bold white on dark_blue")
+    bar.append(" JCR INVESTMENTS TERMINAL  ", style="bold white on dark_blue")
     bar.append(f" {now_ams.strftime('%a %d %b %Y  %H:%M:%S CET')} ", style="white")
     bar.append(f"| UTC {now_utc.strftime('%H:%M')} ", style="dim white")
-    bar.append(f"| NAV ", style="white")
+    bar.append("| NAV ", style="white")
     bar.append(f"€{_fmt_num(nav_eur)} ", style="bold cyan")
     bar.append(f"/ ${_fmt_num(nav_usd)} ", style="cyan")
     bar.append(f"| EUR/USD {eur_usd:.4f} ", style="yellow")
-    bar.append(f"| {ams_status}  {nyse_status}", style="")
+    bar.append("| ")
+    bar.append("AMS OPEN" if ams_open else "AMS CLOSED", style="green" if ams_open else "dim")
+    bar.append("  ")
+    bar.append("NYSE OPEN" if nyse_open else "NYSE CLOSED", style="green" if nyse_open else "dim")
     bar.append(last_refresh, style="dim")
-    bar.append(stale_warn)
+    if state.snapshot.is_stale:
+        bar.append(" [STALE DATA]", style="bold red")
 
     return Panel(bar, height=3, style="on dark_blue", border_style="blue")
 
@@ -337,13 +337,10 @@ def build_news_panel() -> Panel:
 
     lines = Text()
     for item in items:
-        # Tag chips
         tag_str = " ".join(f"[{t}]" for t in item.tags)
         color = item.sentiment_color
         icon = item.sentiment_icon
-        new_marker = "[bold yellow]●[/] " if item.is_new else "  "
-
-        lines.append(new_marker)
+        lines.append("● " if item.is_new else "  ", style="bold yellow" if item.is_new else "dim")
         lines.append(f"{icon} ", style=color)
         lines.append(f"{tag_str} ", style="dim cyan")
         lines.append(item.headline[:60] + ("…" if len(item.headline) > 60 else ""), style=color)
